@@ -1,4 +1,4 @@
--- stakanew's BHop Script + Fly + FOV + Instant Strafe (Full Sidebar)
+-- stakanew's BHop Script + Fly (with BHop acceleration during Fly) + FOV + Instant Strafe
 -- Защита от повторной загрузки
 if shared.__stakanew_bhop_loaded then
     return
@@ -473,7 +473,7 @@ end
 stakanew_BHopToggle.MouseButton1Click:Connect(function()
     stakanew_BHopEnabled = not stakanew_BHopEnabled
     if stakanew_BHopEnabled then
-        stakanew_FlyEnabled = false
+        -- Если BHop включается вручную, Fly можно оставить включенным
         stakanew_FlyVertSpeed = 0
         if stakanew_RootPart then
             stakanew_RootPart.AssemblyLinearVelocity = Vector3.zero
@@ -706,11 +706,10 @@ flyAccelSlider, _ = stakanew_CreateSlider("Ускорение", stakanew_FlyAcce
 stakanew_FlyToggle.MouseButton1Click:Connect(function()
     stakanew_FlyEnabled = not stakanew_FlyEnabled
     if stakanew_FlyEnabled then
-        stakanew_BHopEnabled = false
+        -- BHop остаётся включенным
         stakanew_FlyVertSpeed = 0
         if stakanew_RootPart then stakanew_RootPart.AssemblyLinearVelocity = Vector3.zero end
     else
-        stakanew_BHopEnabled = true
         if stakanew_RootPart then stakanew_RootPart.AssemblyLinearVelocity = Vector3.zero end
     end
     stakanew_ApplyMovementState()
@@ -1204,11 +1203,10 @@ stakanew_UIS.InputBegan:Connect(function(input, gp)
     elseif kc == Enum.KeyCode.F then
         stakanew_FlyEnabled = not stakanew_FlyEnabled
         if stakanew_FlyEnabled then
-            stakanew_BHopEnabled = false
+            -- BHop остаётся включенным
             stakanew_FlyVertSpeed = 0
             if stakanew_RootPart then stakanew_RootPart.AssemblyLinearVelocity = Vector3.zero end
         else
-            stakanew_BHopEnabled = true
             if stakanew_RootPart then stakanew_RootPart.AssemblyLinearVelocity = Vector3.zero end
         end
         stakanew_ApplyMovementState()
@@ -1262,41 +1260,75 @@ local function stakanew_PhysicsStep(dt)
         if stakanew_UIS:IsKeyDown(Enum.KeyCode.A) then moveDir -= camRight end
         if stakanew_UIS:IsKeyDown(Enum.KeyCode.D) then moveDir += camRight end
         if moveDir.Magnitude > 0 then moveDir = Vector3.new(moveDir.X, 0, moveDir.Z).Unit end
-        if stakanew_UIS:IsKeyDown(Enum.KeyCode.Space) then
-            stakanew_FlyVertSpeed = math.min(stakanew_FlyVertSpeed + stakanew_FlyAccel * dt * 60, stakanew_FlyMaxVert)
-        elseif stakanew_UIS:IsKeyDown(Enum.KeyCode.LeftShift) then
-            stakanew_FlyVertSpeed = math.max(stakanew_FlyVertSpeed - stakanew_FlyAccel * dt * 60, -stakanew_FlyMaxVert)
+
+        if stakanew_BHopEnabled then
+            -- Вертикальное управление Fly
+            if stakanew_UIS:IsKeyDown(Enum.KeyCode.Space) then
+                stakanew_FlyVertSpeed = math.min(stakanew_FlyVertSpeed + stakanew_FlyAccel * dt * 60, stakanew_FlyMaxVert)
+            elseif stakanew_UIS:IsKeyDown(Enum.KeyCode.LeftShift) then
+                stakanew_FlyVertSpeed = math.max(stakanew_FlyVertSpeed - stakanew_FlyAccel * dt * 60, -stakanew_FlyMaxVert)
+            else
+                stakanew_FlyVertSpeed = stakanew_FlyVertSpeed * stakanew_FlyDamp
+            end
+
+            -- Горизонтальное ускорение как в BHop (с использованием AirAccel и AirSpeed)
+            local wishDir = stakanew_GetWishDir()
+            local currentHorizVel = Vector3.new(stakanew_Velocity.X, 0, stakanew_Velocity.Z)
+            if wishDir.Magnitude > 0 then
+                if stakanew_InstantStrafe then
+                    currentHorizVel = stakanew_InstantStrafeFunction(currentHorizVel, wishDir, stakanew_InstantStrafePower)
+                else
+                    currentHorizVel = stakanew_Accelerate(currentHorizVel, wishDir, stakanew_AirSpeed, stakanew_AirAccel, dt)
+                    currentHorizVel = stakanew_ApplyAirControl(currentHorizVel, wishDir, dt)
+                end
+            end
+            stakanew_Velocity = Vector3.new(currentHorizVel.X, 0, currentHorizVel.Z) -- сохраняем горизонталь
+            local finalVel = Vector3.new(currentHorizVel.X, stakanew_FlyVertSpeed, currentHorizVel.Z)
+            stakanew_RootPart.AssemblyLinearVelocity = finalVel
         else
-            stakanew_FlyVertSpeed = stakanew_FlyVertSpeed * stakanew_FlyDamp
+            -- Обычный Fly без BHop
+            if stakanew_UIS:IsKeyDown(Enum.KeyCode.Space) then
+                stakanew_FlyVertSpeed = math.min(stakanew_FlyVertSpeed + stakanew_FlyAccel * dt * 60, stakanew_FlyMaxVert)
+            elseif stakanew_UIS:IsKeyDown(Enum.KeyCode.LeftShift) then
+                stakanew_FlyVertSpeed = math.max(stakanew_FlyVertSpeed - stakanew_FlyAccel * dt * 60, -stakanew_FlyMaxVert)
+            else
+                stakanew_FlyVertSpeed = stakanew_FlyVertSpeed * stakanew_FlyDamp
+            end
+            local targetVel = moveDir * stakanew_FlySpeed + Vector3.new(0, stakanew_FlyVertSpeed, 0)
+            local currentVel = stakanew_RootPart.AssemblyLinearVelocity
+            local diff = targetVel - currentVel
+            local maxChange = stakanew_FlyAccel * dt * 60
+            if diff.Magnitude > maxChange then diff = diff.Unit * maxChange end
+            local noise = Vector3.new(
+                math.random(-20, 20) / 100,
+                math.random(-20, 20) / 100,
+                math.random(-20, 20) / 100
+            ) * dt * stakanew_FlyNoise
+            local newVel = currentVel + diff + noise
+            stakanew_RootPart.AssemblyLinearVelocity = newVel
         end
-        local targetVel = moveDir * stakanew_FlySpeed + Vector3.new(0, stakanew_FlyVertSpeed, 0)
-        local currentVel = stakanew_RootPart.AssemblyLinearVelocity
-        local diff = targetVel - currentVel
-        local maxChange = stakanew_FlyAccel * dt * 60
-        if diff.Magnitude > maxChange then diff = diff.Unit * maxChange end
-        local noise = Vector3.new(
-            math.random(-20, 20) / 100,
-            math.random(-20, 20) / 100,
-            math.random(-20, 20) / 100
-        ) * dt * stakanew_FlyNoise
-        local newVel = currentVel + diff + noise
-        stakanew_RootPart.AssemblyLinearVelocity = newVel
-        if moveDir.Magnitude > 0.1 then
-            local targetCF = CFrame.lookAt(stakanew_RootPart.Position, stakanew_RootPart.Position + moveDir)
-            stakanew_RootPart.CFrame = stakanew_RootPart.CFrame:Lerp(targetCF, math.min(1, dt * 15))
-        else
-            local flatCam = CFrame.new(stakanew_RootPart.Position, stakanew_RootPart.Position + Vector3.new(camForward.X, 0, camForward.Z))
-            stakanew_RootPart.CFrame = stakanew_RootPart.CFrame:Lerp(flatCam, math.min(1, dt * 10))
+
+        -- Поворот персонажа
+        -- Поворот персонажа: в сторону камеры (как в BHop), чтобы не крутило
+        if not stakanew_SpinbotEnabled then
+            local look = stakanew_Flat(stakanew_Camera.CFrame.LookVector)
+            if look.Magnitude > 0.01 then
+                stakanew_RootPart.CFrame = CFrame.new(stakanew_RootPart.Position, stakanew_RootPart.Position + look)
+            end
         end
+
         if math.random() < stakanew_FlyPacketLoss then
-            stakanew_RootPart.AssemblyLinearVelocity = stakanew_RootPart.AssemblyLinearVelocity * 0.95
+            local vel = stakanew_RootPart.AssemblyLinearVelocity
+            stakanew_RootPart.AssemblyLinearVelocity = vel * 0.95
         end
+
         local fv = stakanew_Flat(stakanew_RootPart.AssemblyLinearVelocity)
         local currentSpeed = math.floor(fv.Magnitude * 10) / 10
         stakanew_SpeedCounter.Text = string.format("%.1f", currentSpeed)
         return
     end
 
+    -- Обычный режим (без Fly)
     if stakanew_SpinbotEnabled and stakanew_RootPart then
         stakanew_RootPart.CFrame = stakanew_RootPart.CFrame * CFrame.Angles(0, math.rad(stakanew_SpinbotSpeed * 2), 0)
     end
@@ -1412,4 +1444,4 @@ end
 
 if stakanew_Player.Character then stakanew_Setup(stakanew_Player.Character) end
 stakanew_Player.CharacterAdded:Connect(stakanew_Setup)
-print("stakanew's BHop + Fly + FOV + Instant Strafe Script загружен!")
+print("stakanew's BHop + Fly (с BHop разгоном) + FOV + Instant Strafe Script загружен!")
